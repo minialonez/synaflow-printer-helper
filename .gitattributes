@@ -1,0 +1,6 @@
+# Windows scripts must keep CRLF - cmd.exe misreads LF-only batch files on some PCs
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.cs   text
+*.csproj text
+*.md   text

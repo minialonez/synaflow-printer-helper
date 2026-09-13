@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Synaflow — ตัวติดตั้งตัวช่วยพิมพ์ (W245 ข้อ ① และ ④ · Toppy เคาะ 12 ก.ย. 2569)
+
+    ทำไมถึงมีไฟล์นี้: เดิมลูกค้าต้องก๊อป .ps1 สองไฟล์ไปเครื่องนั้น แล้วคลิกขวา →
+    Run with PowerShell → ผ่านจอเตือนนโยบายสคริปต์ → กลับมากดปุ่มในเว็บอีกที = 6 ขั้น
+    ซึ่งลูกค้าทำเองทางโทรศัพท์แทบไม่ได้ กลายเป็นกำแพงตอนเอาโปรแกรมไปขาย
+
+    🔴 รอบแรกทำเป็น "ตัวห่อ" ที่แตกสคริปต์ .ps1 ลงดิสก์แล้วเรียก powershell รัน
+       → **Kaspersky จับเป็น Trojan ตอนกด** (W247) · พิสูจน์ด้วย avp.com SCAN แล้วว่า
+       ตัวไฟล์เฉย ๆ สะอาด 453 ชิ้น เจอ 0 ⇒ โดนจับเพราะ "พฤติกรรมขณะรัน" ไม่ใช่วิธีห่อไฟล์
+       ⇒ รอบนี้ย้ายงานพิมพ์มาเป็น C# ในตัวเอง **ไม่มีสคริปต์ ไม่มี powershell ในวงจรเลย**
+       ไฟล์เดียวทำ 2 หน้าที่: ไม่มี argument = ตัวติดตั้ง · ส่ง argument "serve" = ตัวช่วยพิมพ์
+
+    🪤 scripts/printer-helper.ps1 ยังอยู่ในรีโปเป็น **ทางถอย** ถ้าตัว C# มีปัญหา — อย่าลบ
+    🪤 จอฟ้า SmartScreen **ไม่ติด** (Toppy ทดสอบเอง 12 ก.ย.) จึงยังไม่ต้องซื้อใบรับรอง
+
+    วิธี build:
+      dotnet publish tools/PrinterHelperSetup -c Release
+      ได้ไฟล์เดียวที่ bin/Release/net8.0-windows/win-x64/publish/SynaflowPrinterSetup.exe
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SynaflowPrinterHelper</AssemblyName>
+    <RootNamespace>SynaflowPrinterSetup</RootNamespace>
+
+    <!-- ไฟล์เดียวจบ ไม่ต้องให้ลูกค้าลง .NET ก่อน — ทั้งหมดนี้คือเหตุผลที่ทำเป็น .exe -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!-- 🪤 ห้ามเปิด PublishTrimmed — System.Text.Json ใช้ reflection ตัวตัดจะตัดทิ้งแล้วพังตอน runtime -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <Version>1.0.0</Version>
+    <Product>Synaflow Printer Helper</Product>
+    <Company>Synaflow</Company>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      🔴 เลิกฝังไฟล์ .ps1 ไว้ในตัว .exe แล้ว (W247 · 12 ก.ย. 2569)
+         รุ่นก่อนฝัง printer-helper.ps1 + printer-helper-setup.ps1 ไว้ แล้วแตกลงดิสก์
+         ตอนติดตั้ง แล้วเรียก powershell.exe -ExecutionPolicy Bypass รัน
+         ⇒ Kaspersky จับเป็น Trojan ตอนกด (สแกนตัวไฟล์เฉย ๆ สะอาด 453 ชิ้น เจอ 0
+           แต่โดนจับตอนรัน = จับจากพฤติกรรม)
+         ตอนนี้งานพิมพ์ทั้งหมดอยู่ใน C# ของตัวเอง ไม่มีสคริปต์ ไม่มี powershell
+      🪤 scripts/printer-helper.ps1 ยังอยู่ในรีโปเป็นทางถอยถ้าตัว C# มีปัญหา — อย่าลบ
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+  </ItemGroup>
+
+</Project>
