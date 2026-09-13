@@ -34,6 +34,24 @@ internal static class HelperServer
         "http://127.0.0.1:3000",
     };
 
+    /// v1.0.1 (14 ก.ย. 2569): รับซับโดเมนของ synaflow.app ด้วย (เช่น https://jknfc.synaflow.app)
+    ///    ระบบย้ายจาก synaflow.app ไปโดเมนย่อยของแต่ละบริษัท — รุ่น 1.0.0 ปฏิเสธ → พิมพ์บิล/เปิดลิ้นชักไม่ได้
+    ///    จำกัดแค่ https + ชื่อย่อยชั้นเดียวของ synaflow.app (โดเมนของเราเท่านั้น คนอื่นจดชื่อย่อยใต้โดเมนเราไม่ได้)
+    /// 🪤 ห้ามใช้ EndsWith("synaflow.app") ลอย ๆ — "https://evilsynaflow.app" จะผ่าน
+    internal static bool IsAllowedOrigin(string origin)
+    {
+        if (AllowedOrigins.Contains(origin)) return true;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var u)) return false;
+        if (u.Scheme != Uri.UriSchemeHttps || !u.IsDefaultPort) return false;
+        if (origin != $"https://{u.Host}") return false;   // มี path/พอร์ต/ตัวพิมพ์เพี้ยน = ไม่ใช่ origin จริง
+        const string suffix = ".synaflow.app";
+        if (!u.Host.EndsWith(suffix, StringComparison.Ordinal)) return false;
+        var label = u.Host[..^suffix.Length];
+        return label.Length is > 0 and <= 63
+            && label.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '-')
+            && label[0] != '-' && label[^1] != '-';
+    }
+
     static readonly string Machine = Environment.MachineName;
 
     public static int Run()
@@ -77,7 +95,7 @@ internal static class HelperServer
         // ไม่งั้น Chrome บล็อก preflight ทิ้งตั้งแต่ต้น
         var origin = req.Headers["Origin"];
         var originBlank = string.IsNullOrWhiteSpace(origin);
-        var originOk = originBlank || AllowedOrigins.Contains(origin);
+        var originOk = originBlank || IsAllowedOrigin(origin!);
 
         if (!originBlank && originOk)
         {
