@@ -41,7 +41,7 @@
     <PublishTrimmed>false</PublishTrimmed>
     <InvariantGlobalization>true</InvariantGlobalization>
 
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <Product>Synaflow Printer Helper</Product>
     <Company>Synaflow</Company>
   </PropertyGroup>
