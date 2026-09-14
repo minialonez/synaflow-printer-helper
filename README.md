@@ -63,6 +63,13 @@ dotnet publish src/PrinterHelperSetup.csproj -c Release
 
 Output: `src/bin/Release/net8.0-windows/win-x64/publish/SynaflowPrinterHelper.exe`
 
+## Licence
+
+The source is published **for inspection only** — it is not open source. You may read it and
+build it to verify a release, but not copy, modify, redistribute or reuse it. See [LICENSE](LICENSE).
+Third-party components (the .NET runtime, System.Drawing.Common, and SumatraPDF which is
+downloaded separately) remain under their own licences — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
 ## Why the downloads live here and not on synaflow.app
 
 Serving an unsigned executable plus a download-and-run script from the same domain as the
