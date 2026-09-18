@@ -159,6 +159,11 @@ Write-Host ""
 if ($ok) {
     Say "SUCCESS - the printer helper is running." Green
     Say "It starts by itself every time you sign in to Windows, and updates itself then." Green
+    # v1.1.0 (W302): เครื่องนี้จะไปถามงานพิมพ์จากเซิร์ฟเวอร์เองด้วย ต้องมีคนกดอนุมัติหนึ่งครั้ง
+    #    ถ้าไม่บอกตรงนี้ ลูกค้าจะลงเสร็จแล้วงงว่าทำไมสั่งพิมพ์จากมือถือแล้วไม่ออก
+    Say "One more step: ask an admin to approve this PC once in Synaflow" Cyan
+    Say "  (menu: Master data -> Printers). Until then this PC only prints" Cyan
+    Say "  from the browser on this same machine." Cyan
     if (-not $Quiet) {
         Write-Host ""
         Say "A window will now open so you can test printing and the cash drawer." Cyan

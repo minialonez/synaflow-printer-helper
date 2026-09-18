@@ -5,8 +5,14 @@ namespace SynaflowPrinterSetup;
 
 /// <summary>
 /// ตัวช่วยพิมพ์ของ Synaflow — ไฟล์ .exe ตัวเดียวมี 2 โหมด:
-///   • <c>serve</c> → เปิดพอร์ต 9999 รอหน้าเว็บเรียก (โหมดที่รันค้างในเครื่องทุกวัน)
+///   • <c>serve</c> → เปิดพอร์ต 9999 รอหน้าเว็บเรียก **และ** ดึงงานพิมพ์จากเซิร์ฟเวอร์เอง
+///                    (โหมดที่รันค้างในเครื่องทุกวัน)
 ///   • ไม่มี argument หรือ <c>test-ui</c> → หน้าต่างภาษาไทยไว้ดูสถานะ + ทดสอบพิมพ์
+///
+/// argument เสริม (v1.1.0 · W302):
+///   --server=https://…   เซิร์ฟเวอร์ที่จะไปดึงงาน (ค่าตั้งต้น https://synaflow.app)
+///                        ตั้งผ่านตัวแปรสภาพแวดล้อม SYNAFLOW_SERVER ก็ได้ (ใช้ตอนทดสอบ)
+///   --no-cloud           ไม่ดึงงานจากเซิร์ฟเวอร์เลย ทำตัวเหมือนรุ่น 1.0.x ทุกอย่าง
 ///
 /// 🔴 **ไฟล์นี้ไม่ติดตั้งอะไรเองเด็ดขาด** — ไม่คัดลอกตัวเอง ไม่เขียนรีจิสทรี
 ///    ไม่สร้างทางลัดเปิดเองตอนบูต (W247 · 12 ก.ย. 2569)
@@ -27,14 +33,28 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        var mode = args.FirstOrDefault(a => a.StartsWith("--", StringComparison.Ordinal))?.TrimStart('-');
+        // 🪤 เดิมอ่าน "--" ตัวแรกเป็นโหมด — พอมี --server=… มาก่อน --serve จะเข้าโหมดผิดทันที
+        //    v1.1.0 จึงหาคำว่า serve จากทุก argument แทนที่จะดูแค่ตัวแรก
+        var serve = args.Any(a => string.Equals(a.TrimStart('-'), "serve", StringComparison.OrdinalIgnoreCase));
+        if (!serve) { ApplicationConfiguration.Initialize(); Application.Run(new StatusForm()); return 0; }
 
-        if (string.Equals(mode, "serve", StringComparison.OrdinalIgnoreCase))
-            return HelperServer.Run();
+        var server = Arg(args, "--server=")
+                     ?? Environment.GetEnvironmentVariable("SYNAFLOW_SERVER")
+                     ?? CloudAgent.DefaultServer;
+        var cloud = !args.Any(a => string.Equals(a.TrimStart('-'), "no-cloud", StringComparison.OrdinalIgnoreCase));
 
-        ApplicationConfiguration.Initialize();
-        Application.Run(new StatusForm());
-        return 0;
+        return HelperServer.Run(server, cloud);
+    }
+
+    static string? Arg(string[] args, string prefix)
+    {
+        foreach (var a in args)
+            if (a.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var v = a[prefix.Length..].Trim().Trim('"');
+                if (v.Length > 0) return v;
+            }
+        return null;
     }
 }
 
@@ -142,15 +162,16 @@ sealed class StatusForm : Form
         _log.Clear();
         Say("กำลังตรวจ...");
 
-        string? machine = null;
+        Health? health = null;
         for (var i = 0; i < 8; i++)
         {
-            machine = await TryHealthAsync();
-            if (machine != null) break;
+            health = await TryHealthAsync();
+            if (health != null) break;
             await Task.Delay(500);
         }
+        var machine = health?.Machine;
 
-        if (machine == null)
+        if (health == null)
         {
             Say("");
             Say("❌ ตัวช่วยพิมพ์ยังไม่ทำงานบนเครื่องนี้");
@@ -167,8 +188,23 @@ sealed class StatusForm : Form
         }
 
         Say("");
-        Say($"✅ ตัวช่วยพิมพ์ทำงานอยู่ — เครื่องนี้ชื่อ \"{machine}\"");
+        Say($"✅ ตัวช่วยพิมพ์ทำงานอยู่ — เครื่องนี้ชื่อ \"{machine}\"" + (health.Version.Length > 0 ? $" · รุ่น {health.Version}" : ""));
         _recheck.BackColor = Color.FromArgb(26, 122, 78);
+
+        // โหมดรับงานผ่านเซิร์ฟเวอร์ (v1.1.0) — บอกให้คนหน้าร้านเห็นว่าต้องรออนุมัติหรือใช้ได้แล้ว
+        if (health.CloudMessage.Length > 0)
+        {
+            var mark = health.CloudStatus switch
+            {
+                "linked" => "✅",
+                "pending" => "⏳",
+                "off" or "duplicate" => "•",
+                _ => "⚠️",
+            };
+            Say($"{mark} รับงานผ่านเซิร์ฟเวอร์: {health.CloudMessage}");
+            if (health.CloudStatus == "pending")
+                Say("   (ให้แอดมินเข้าระบบ → ⚙️ ตั้งค่า → เครื่องพิมพ์ แล้วกด \"อนุมัติ\" เครื่องนี้)");
+        }
 
         var printers = await GetPrintersAsync();
         Say("");
@@ -258,13 +294,28 @@ sealed class StatusForm : Form
         return b.ToArray();
     }
 
-    async Task<string?> TryHealthAsync()
+    sealed record Health(string Machine, string Version, string CloudStatus, string CloudMessage);
+
+    async Task<Health?> TryHealthAsync()
     {
         try
         {
             var json = await _http.GetStringAsync(HelperUrl + "/health");
             using var doc = JsonDocument.Parse(json);
-            return doc.RootElement.TryGetProperty("machine", out var m) ? m.GetString() : "";
+            var root = doc.RootElement;
+
+            var machine = root.TryGetProperty("machine", out var m) ? m.GetString() ?? "" : "";
+            var version = root.TryGetProperty("version", out var v) ? v.GetString() ?? "" : "";
+
+            // ตัวช่วยพิมพ์รุ่น 1.0.x ไม่มีก้อน cloud — ไม่ใช่ความผิดพลาด แค่ไม่มีอะไรจะแสดง
+            var status = "";
+            var message = "";
+            if (root.TryGetProperty("cloud", out var c) && c.ValueKind == JsonValueKind.Object)
+            {
+                status = c.TryGetProperty("status", out var s) ? s.GetString() ?? "" : "";
+                message = c.TryGetProperty("message", out var msg) ? msg.GetString() ?? "" : "";
+            }
+            return new Health(machine, version, status, message);
         }
         catch { return null; }
     }

@@ -41,7 +41,9 @@
     <PublishTrimmed>false</PublishTrimmed>
     <InvariantGlobalization>true</InvariantGlobalization>
 
-    <Version>1.0.2</Version>
+    <!-- 🪤 ที่เดียวที่กำหนดเลขรุ่น — AppInfo.Version อ่านจากตรงนี้ · helper-start.ps1 เทียบรุ่น
+         จาก ProductVersion ของไฟล์ .exe ⇒ ตัวเลขนี้ต้องตรงกับแท็ก release เสมอ (vX.Y.Z) -->
+    <Version>1.1.0</Version>
     <Product>Synaflow Printer Helper</Product>
     <Company>Synaflow</Company>
   </PropertyGroup>

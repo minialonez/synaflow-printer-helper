@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +19,11 @@ namespace SynaflowPrinterSetup;
 /// 🪤 ตั้งใจทำทีละคำขอ (single-thread) เหมือนสคริปต์เดิม — ของเดิมเลือกแบบนี้แล้วคุม
 ///    timeout ทุกจุดที่เรียกโปรแกรมอื่น เพื่อไม่ให้คำขอหนึ่งค้างแล้วแขวนทั้งตัว
 ///    ถ้าเปลี่ยนเป็นหลายเธรดต้องทบทวน timeout ใหม่ทั้งหมด — อย่าเปลี่ยนลอย ๆ
+///
+/// v1.1.0 (W302): เพิ่ม "ตัวดึงงานจากเซิร์ฟเวอร์" (CloudAgent) ทำงานคู่กันอีกเธรด
+///    ⇒ พอร์ต 9999 **ไม่เปลี่ยนอะไรเลย** ทั้งปลายทาง รูป JSON รหัสผิดพลาด และ allowlist
+///      (เพิ่มแค่ฟิลด์ version + cloud ใน /health ซึ่งเป็นการ "เติม" ไม่ใช่ "เปลี่ยน")
+///    ⇒ ขั้นตอนพิมพ์จริงย้ายไป PrintOps.cs ให้ 2 ทางใช้ตัวเดียวกัน จะได้ไม่เพี้ยนแยกกัน
 /// </summary>
 internal static class HelperServer
 {
@@ -54,8 +58,13 @@ internal static class HelperServer
 
     static readonly string Machine = Environment.MachineName;
 
-    public static int Run()
+    /// <param name="server">ที่อยู่เซิร์ฟเวอร์สำหรับโหมดดึงงาน (ค่าตั้งต้น https://synaflow.app)</param>
+    /// <param name="cloud">false = ไม่ออกเน็ตเลย ทำตัวเหมือนรุ่น 1.0.x ทุกอย่าง</param>
+    public static int Run(string server, bool cloud)
     {
+        // เริ่มตัวดึงงานก่อน — ต่อให้พอร์ต 9999 เปิดไม่ได้ (โปรแกรมอื่นยึดอยู่) เครื่องนี้ก็ยังพิมพ์ได้
+        CloudAgent.Start(server, cloud);
+
         var listener = new HttpListener();
         listener.Prefixes.Add($"http://localhost:{Port}/");
         listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
@@ -64,10 +73,21 @@ internal static class HelperServer
         catch (Exception ex)
         {
             Log($"เปิดพอร์ต {Port} ไม่ได้ — มีตัวอื่นใช้อยู่หรือเปล่า: {ex.Message}");
-            return 1;
+
+            // 🪤 v1.1.0: เปิดพอร์ตไม่ได้ ไม่ได้แปลว่าพิมพ์ไม่ได้อีกต่อไป — ถ้าตัวดึงงานทำงานอยู่
+            //    ให้อยู่ต่อด้วยทางนั้น · แต่ถ้าตัวดึงงานก็ไม่ได้ทำงาน (= มีตัวช่วยพิมพ์อีกตัวครบชุด
+            //    อยู่แล้วบนเครื่องนี้) ต้องออกไปเลย ไม่งั้นจะเหลือโปรเซสซอมบี้ค้างไว้เฉย ๆ
+            if (!CloudAgent.Running)
+            {
+                Log("ไม่มีทางรับงานเหลือแล้ว — ปิดตัวเอง");
+                return 1;
+            }
+            Log("ทำงานต่อด้วยโหมดดึงงานจากเซิร์ฟเวอร์อย่างเดียว");
+            Thread.Sleep(Timeout.Infinite);
+            return 0;
         }
 
-        Log($"ตัวช่วยพิมพ์ทำงานแล้ว · เครื่อง {Machine} · พอร์ต {Port}");
+        Log($"ตัวช่วยพิมพ์ทำงานแล้ว · รุ่น {AppInfo.Version} · เครื่อง {Machine} · พอร์ต {Port}");
 
         while (listener.IsListening)
         {
@@ -122,7 +142,22 @@ internal static class HelperServer
 
         if (method == "GET" && path == "/health")
         {
-            SendJson(res, new { ok = true, machine = Machine });
+            // 🪤 ฟิลด์ ok/machine ต้องคงอยู่ชื่อเดิมเป๊ะ — usePrinterHelper.ts อ่าน 2 ตัวนี้
+            //    v1.1.0 เติม version + cloud (สถานะโหมดดึงงาน) ให้หน้าตั้งค่าเอาไปแสดงได้ · ไม่มี secret
+            SendJson(res, new
+            {
+                ok = true,
+                machine = Machine,
+                version = AppInfo.Version,
+                cloud = new
+                {
+                    enabled = CloudAgent.Running,
+                    status = CloudAgent.State,
+                    message = CloudAgent.Thai,
+                    server = CloudAgent.Server,
+                    printed = CloudAgent.Printed,
+                },
+            });
         }
         else if (method == "GET" && path == "/printers")
         {
@@ -135,16 +170,17 @@ internal static class HelperServer
             var b = ReadBody(req);
             var printer = Str(b, "printerName");
             if (printer is null) { SendJson(res, new { error = "missing_printer" }, 400); return; }
-            try
+
+            var r = PrintOps.Drawer(printer);
+            if (r.Ok)
             {
-                RawPrint.Send(printer, RawPrint.DrawerKick);
                 SendJson(res, new { ok = true });
                 Log($"POST /cash-drawer → '{printer}' OK");
             }
-            catch (Exception ex)
+            else
             {
-                SendJson(res, new { error = "drawer_failed", detail = ex.Message }, 400);
-                Log($"POST /cash-drawer → พลาด: {ex.Message}");
+                SendJson(res, new { error = r.Error, detail = r.Detail }, r.Status);
+                Log($"POST /cash-drawer → พลาด: {r.Detail}");
             }
         }
         else if (method == "POST" && path == "/print-raw")
@@ -153,17 +189,26 @@ internal static class HelperServer
             var printer = Str(b, "printerName");
             var b64 = Str(b, "base64");
             if (printer is null || b64 is null) { SendJson(res, new { error = "missing_fields" }, 400); return; }
-            try
-            {
-                var bytes = Convert.FromBase64String(b64);
-                RawPrint.Send(printer, bytes);
-                SendJson(res, new { ok = true, bytes = bytes.Length });
-                Log($"POST /print-raw → '{printer}' {bytes.Length} ไบต์ OK");
-            }
+
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(b64); }
             catch (Exception ex)
             {
                 SendJson(res, new { error = "print_raw_failed", detail = ex.Message }, 400);
                 Log($"POST /print-raw → พลาด: {ex.Message}");
+                return;
+            }
+
+            var r = PrintOps.Raw(printer, bytes);
+            if (r.Ok)
+            {
+                SendJson(res, new { ok = true, bytes = bytes.Length });
+                Log($"POST /print-raw → '{printer}' {bytes.Length} ไบต์ OK");
+            }
+            else
+            {
+                SendJson(res, new { error = r.Error, detail = r.Detail }, r.Status);
+                Log($"POST /print-raw → พลาด: {r.Detail}");
             }
         }
         else if (method == "POST" && path == "/print-pdf")
@@ -181,6 +226,8 @@ internal static class HelperServer
     }
 
     // ── POST /print-pdf — พิมพ์ PDF เงียบผ่าน SumatraPDF ──────────────────────────
+    // 🔴 v1.1.0: ขั้นตอนพิมพ์ย้ายไป PrintOps (ใช้ร่วมกับงานที่ดึงมาจากเซิร์ฟเวอร์)
+    //    ไฟล์นี้เหลือหน้าที่เดียวคือแปลงผลเป็น JSON รูปเดิมเป๊ะ — หน้าเว็บไม่ต้องแก้อะไร
     static void HandlePrintPdf(HttpListenerRequest req, HttpListenerResponse res)
     {
         var b = ReadBody(req);
@@ -188,47 +235,32 @@ internal static class HelperServer
         var b64 = Str(b, "base64");
         if (printer is null || b64 is null) { SendJson(res, new { error = "missing_fields" }, 400); return; }
 
-        var sumatra = ToolFinder.FindSumatra(Log);
-        if (string.IsNullOrEmpty(sumatra))
-        {
-            SendJson(res, new { error = "sumatra_not_found", detail = "ไม่เจอ SumatraPDF และโหลดอัตโนมัติไม่สำเร็จ — เช็คอินเทอร์เน็ต" }, 500);
-            Log("POST /print-pdf → ไม่เจอ SumatraPDF");
-            return;
-        }
-
-        var tmp = Path.Combine(Path.GetTempPath(), $"erp-print-{Guid.NewGuid():N}.pdf");
-        try
-        {
-            var bytes = Convert.FromBase64String(b64);
-            File.WriteAllBytes(tmp, bytes);
-
-            var ps = Str(b, "printSettings") ?? "noscale";
-            // 🪤 งานดอตเมตริกซ์พิมพ์ช้า SumatraPDF อาจไม่จบไว → เกิน 20 วิถือว่าเข้าคิวแล้ว ตอบ ok
-            //    (ของเดิมเลือกแบบนี้ไว้ เพราะไม่งั้นปุ่มบนจอค้างทั้งที่งานเข้าคิวไปแล้ว)
-            var r = RunTool(sumatra, SumatraArgs(printer, ps, tmp), 20_000);
-
-            if (r.timedOut)
-            {
-                SendJson(res, new { ok = true, bytes = bytes.Length, note = "spooled" });
-                Log($"POST /print-pdf → เข้าคิวแล้ว (SumatraPDF เกิน 20 วิ) '{printer}'");
-            }
-            else if (r.exitCode != 0)
-            {
-                SendJson(res, new { error = $"sumatra_exit_{r.exitCode}", detail = $"SumatraPDF ล้ม (exit {r.exitCode}) — เช็คว่าเครื่องพิมพ์ '{printer}' มีอยู่และออนไลน์" }, 500);
-                Log($"POST /print-pdf → SumatraPDF exit {r.exitCode} ('{printer}')");
-            }
-            else
-            {
-                SendJson(res, new { ok = true, bytes = bytes.Length });
-                Log($"POST /print-pdf → '{printer}' {bytes.Length} ไบต์ OK");
-            }
-        }
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(b64); }
         catch (Exception ex)
         {
             SendJson(res, new { error = "print_pdf_failed", detail = ex.Message }, 400);
             Log($"POST /print-pdf → พลาด: {ex.Message}");
+            return;
         }
-        finally { TryDelete(tmp); }
+
+        var r = PrintOps.Pdf(printer, bytes, Str(b, "printSettings"));
+
+        if (r.Ok && r.Note == "spooled")
+        {
+            SendJson(res, new { ok = true, bytes = bytes.Length, note = "spooled" });
+            Log($"POST /print-pdf → เข้าคิวแล้ว (SumatraPDF เกิน 20 วิ) '{printer}'");
+        }
+        else if (r.Ok)
+        {
+            SendJson(res, new { ok = true, bytes = bytes.Length });
+            Log($"POST /print-pdf → '{printer}' {bytes.Length} ไบต์ OK");
+        }
+        else
+        {
+            SendJson(res, new { error = r.Error, detail = r.Detail }, r.Status);
+            Log($"POST /print-pdf → พลาด: {r.Message}");
+        }
     }
 
     // ── POST /print-html — HTML → PDF (Chrome ไม่เปิดหน้าต่าง) → พิมพ์เงียบ ────────
@@ -241,111 +273,17 @@ internal static class HelperServer
         var html = Str(b, "html");
         if (printer is null || html is null) { SendJson(res, new { error = "missing_fields" }, 400); return; }
 
-        var chrome = ToolFinder.FindChrome();
-        if (string.IsNullOrEmpty(chrome))
+        var r = PrintOps.Html(printer, html, Str(b, "printSettings"));
+        if (r.Ok)
         {
-            SendJson(res, new { error = "chrome_not_found", detail = "ไม่เจอ Chrome/Edge — จำเป็นกับการทำ PDF ป้ายราคา" }, 500);
-            Log("POST /print-html → ไม่เจอ Chrome/Edge");
-            return;
+            SendJson(res, new { ok = true });
+            Log($"POST /print-html → '{printer}' OK");
         }
-        var sumatra = ToolFinder.FindSumatra(Log);
-        if (string.IsNullOrEmpty(sumatra))
+        else
         {
-            SendJson(res, new { error = "sumatra_not_found", detail = "ไม่เจอ SumatraPDF และโหลดอัตโนมัติไม่สำเร็จ" }, 500);
-            Log("POST /print-html → ไม่เจอ SumatraPDF");
-            return;
+            SendJson(res, new { error = r.Error, detail = r.Detail }, r.Status);
+            Log($"POST /print-html → พลาด: {r.Message}");
         }
-
-        var id = Guid.NewGuid().ToString("N");
-        var htmlFile = Path.Combine(Path.GetTempPath(), $"erp-label-{id}.html");
-        var pdfFile = Path.Combine(Path.GetTempPath(), $"erp-label-{id}.pdf");
-        var udd = Path.Combine(Path.GetTempPath(), $"erp-chrome-{id}");
-
-        try
-        {
-            File.WriteAllText(htmlFile, html, new UTF8Encoding(false));
-            var fileUrl = "file:///" + htmlFile.Replace('\\', '/');
-
-            var chromeArgs = new[]
-            {
-                "--headless", "--disable-gpu", "--no-pdf-header-footer",
-                "--user-data-dir=" + udd,
-                "--print-to-pdf=" + pdfFile,
-                fileUrl,
-            };
-            var cr = RunTool(chrome, chromeArgs, 12_000);
-            if (cr.timedOut)
-            {
-                SendJson(res, new { error = "chrome_timeout", detail = "Chrome ทำ PDF ไม่เสร็จใน 12 วินาที" }, 500);
-                Log("POST /print-html → Chrome หมดเวลา");
-                return;
-            }
-            if (!File.Exists(pdfFile))
-            {
-                SendJson(res, new { error = "chrome_pdf_failed", detail = "Chrome ไม่ได้สร้างไฟล์ PDF ออกมา" }, 500);
-                Log("POST /print-html → Chrome ไม่ได้สร้าง PDF");
-                return;
-            }
-
-            var ps = Str(b, "printSettings") ?? "noscale";
-            // 🪤 เครื่องพิมพ์ออฟไลน์ทำ SumatraPDF ค้างรอ → ต้องฆ่าที่ 10 วิ ไม่งั้นตัวช่วยพิมพ์
-            //    (ทำทีละคำขอ) แขวน แล้วหน้าจอฝั่งเบราว์เซอร์รอไม่จบ
-            var r = RunTool(sumatra, SumatraArgs(printer, ps, pdfFile), 10_000);
-
-            if (r.timedOut)
-            {
-                SendJson(res, new { error = "print_timeout", detail = $"SumatraPDF ไม่จบใน 10 วินาที — เครื่องพิมพ์ '{printer}' ต่ออยู่และออนไลน์ไหม" }, 500);
-                Log($"POST /print-html → SumatraPDF หมดเวลา (เครื่อง '{printer}' ออฟไลน์?)");
-            }
-            else if (r.exitCode != 0)
-            {
-                SendJson(res, new { error = $"sumatra_exit_{r.exitCode}", detail = $"SumatraPDF ล้ม (exit {r.exitCode}) — เช็คว่าเครื่องพิมพ์ '{printer}' มีอยู่และออนไลน์" }, 500);
-                Log($"POST /print-html → SumatraPDF exit {r.exitCode} ('{printer}')");
-            }
-            else
-            {
-                SendJson(res, new { ok = true });
-                Log($"POST /print-html → '{printer}' OK");
-            }
-        }
-        catch (Exception ex)
-        {
-            SendJson(res, new { error = "print_html_failed", detail = ex.Message }, 400);
-            Log($"POST /print-html → พลาด: {ex.Message}");
-        }
-        finally
-        {
-            TryDelete(htmlFile);
-            TryDelete(pdfFile);
-            try { if (Directory.Exists(udd)) Directory.Delete(udd, true); } catch { }
-        }
-    }
-
-    static string[] SumatraArgs(string printer, string printSettings, string file) => new[]
-    {
-        // 🪤 ส่งเป็น argv แยกชิ้น ไม่ต่อเป็นสตริงเดียว — .NET ใส่เครื่องหมายคำพูดให้เองถูกต้อง
-        //    ของเดิมต้องใส่ " เองเพราะ PowerShell ไม่ทำให้ ทำให้ชื่อเครื่องที่มีช่องว่าง
-        //    อย่าง "EPSON TM-T82II Receipt" หรือ \\SERVER\Canon G3010 โดนหั่นเป็นหลาย arg
-        "-print-to", ToolFinder.SafePrinterArg(printer),
-        "-print-settings", printSettings,
-        "-silent", "-exit-when-done",
-        file,
-    };
-
-    record ToolResult(bool timedOut, int exitCode);
-
-    static ToolResult RunTool(string exe, string[] args, int timeoutMs)
-    {
-        var psi = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-
-        using var p = Process.Start(psi) ?? throw new Exception($"เรียก {Path.GetFileName(exe)} ไม่ขึ้น");
-        if (!p.WaitForExit(timeoutMs))
-        {
-            try { p.Kill(entireProcessTree: true); } catch { }
-            return new ToolResult(true, -1);
-        }
-        return new ToolResult(false, p.ExitCode);
     }
 
     // ── ตัวช่วยเล็ก ๆ ────────────────────────────────────────────────────────────
@@ -389,19 +327,6 @@ internal static class HelperServer
         catch (Exception ex) { Log("ตอบกลับไม่สำเร็จ (ฝั่งเรียกปิดไปแล้ว?): " + ex.Message); }
     }
 
-    static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
-
-    static void Log(string msg)
-    {
-        var line = $"[{DateTime.Now:HH:mm:ss}] {msg}";
-        try { Console.WriteLine(line); } catch { }
-        // เขียนลงไฟล์ด้วย เพราะตอนใช้จริงมันรันแบบไม่มีหน้าต่าง ไม่มีใครเห็นคอนโซล
-        try
-        {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Synaflow");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "printer-helper.log"), line + Environment.NewLine, new UTF8Encoding(false));
-        }
-        catch { }
-    }
+    /// v1.1.0: ล็อกไปรวมที่ Logger (ไฟล์เดิม printer-helper.log) เพราะตอนนี้มี 2 เธรดเขียน
+    static void Log(string msg) => Logger.Log(msg);
 }
